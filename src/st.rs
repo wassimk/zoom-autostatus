@@ -14,7 +14,8 @@ impl StAction {
     pub fn command(&self) -> &'static str {
         match self {
             StAction::Meeting => "st meeting",
-            StAction::Clear => "st clear",
+            // Leaves a status the user set after the meeting, like lunch, alone
+            StAction::Clear => "st clear --if meeting",
         }
     }
 }
@@ -27,12 +28,13 @@ pub enum StOutcome {
 
 const SLACK_OK: &str = "Slack   \u{2713}";
 const SLACK_FAILED: &str = "Slack   \u{2717}";
+const SLACK_SKIPPED: &str = "Slack   - Skipped";
 
 // st exits 0 even when Slack fails, so its output is the only reliable signal
 pub fn parse_st_output(stdout: &str, stderr: &str) -> StOutcome {
     let lines = || stdout.lines().chain(stderr.lines());
 
-    if lines().any(|line| line.contains(SLACK_OK)) {
+    if lines().any(|line| line.contains(SLACK_OK) || line.contains(SLACK_SKIPPED)) {
         return StOutcome::Success;
     }
 
@@ -43,6 +45,10 @@ pub fn parse_st_output(stdout: &str, stderr: &str) -> StOutcome {
 
     if lines().any(|line| line.contains("command not found: st")) {
         return StOutcome::Failed(friendly_error("command not found: st"));
+    }
+
+    if lines().any(|line| line.contains("unexpected argument '--if'")) {
+        return StOutcome::Failed(friendly_error("unexpected argument '--if'"));
     }
 
     StOutcome::Failed(friendly_error("st printed no Slack result"))
@@ -59,6 +65,19 @@ pub fn friendly_error(raw: &str) -> String {
     if raw.contains("command not found: st") {
         return "st isn't installed or isn't on your shell's PATH. \
                 Install it with: brew install wassimk/tap/st"
+            .to_string();
+    }
+
+    if raw.contains("missing_scope") {
+        return "Your Slack token can't read your status, so the meeting status wasn't cleared. \
+                Add the users.profile:read user token scope to your Slack app, reinstall it, \
+                update SLACK_PAT with the new token, and run `zoom-autostatus restart`."
+            .to_string();
+    }
+
+    if raw.contains("unexpected argument '--if'") {
+        return "Your st is too old to clear only the meeting status. \
+                Update it with: brew upgrade st"
             .to_string();
     }
 
@@ -293,8 +312,29 @@ mod tests {
     }
 
     #[test]
+    fn skipped_clear_is_success() {
+        let stdout = "  Slack   - Skipped, status is :fork_and_knife:, not :virtual-meeting:\n";
+        assert_eq!(parse_st_output(stdout, ""), StOutcome::Success);
+    }
+
+    #[test]
+    fn missing_read_scope_is_friendly() {
+        let stderr = "  Slack   \u{2717} Slack users.profile.get: missing_scope (add the users.profile:read scope to your Slack app)\n";
+        let msg = failed_message(parse_st_output("", stderr));
+        assert!(msg.contains("users.profile:read"), "{msg:?}");
+        assert!(msg.contains("zoom-autostatus restart"), "{msg:?}");
+    }
+
+    #[test]
+    fn old_st_without_clear_if_is_friendly() {
+        let stderr = "error: unexpected argument '--if' found\n\nUsage: st <KEYWORD>\n";
+        let msg = failed_message(parse_st_output("", stderr));
+        assert!(msg.contains("brew upgrade st"), "{msg:?}");
+    }
+
+    #[test]
     fn action_commands() {
         assert_eq!(StAction::Meeting.command(), "st meeting");
-        assert_eq!(StAction::Clear.command(), "st clear");
+        assert_eq!(StAction::Clear.command(), "st clear --if meeting");
     }
 }

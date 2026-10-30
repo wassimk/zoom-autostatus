@@ -4,13 +4,13 @@ Automatically set your Slack status while you're in a Zoom meeting. Watches for 
 
 ## 💡 How It Works
 
-Zoom runs a helper process called `CptHost` only while you're in a meeting. The tool checks for it every 5 seconds. When a meeting starts, it runs `st meeting`. When the meeting ends, it runs `st clear`.
+Zoom runs a helper process called `CptHost` only while you're in a meeting. The tool checks for it every 5 seconds. When a meeting starts, it runs `st meeting`. When the meeting ends, it runs `st clear --if meeting`, which clears your Slack status only if it still has the meeting emoji.
 
-It only clears a status it set. If you set `st lunch` and never join a Zoom meeting, your status is left alone.
+It only clears a status it set. If you leave a meeting and set `st lunch` right away, or set lunch without ever joining a meeting, your lunch status is left alone.
 
 ## 🛠️ Install
 
-Set up [st](https://github.com/wassimk/st) first. zoom-autostatus runs `st` for you, so `st` needs its tokens before this will work. At minimum, export `SLACK_PAT` from your shell startup file (`~/.zshrc` or `~/.zprofile` for zsh).
+Set up [st](https://github.com/wassimk/st) first. zoom-autostatus runs `st` for you, so `st` needs its tokens before this will work. At minimum, export `SLACK_PAT` from your shell startup file (`~/.zshrc` or `~/.zprofile` for zsh). The token needs the `users.profile:read` scope so the status can be checked before it's cleared.
 
 ```shell
 brew install wassimk/tap/zoom-autostatus
@@ -112,7 +112,7 @@ brew install wassimk/tap/st
 ## 📝 Good to Know
 
 - If you already have a status when a meeting starts, like `st lunch`, the meeting status replaces it and is cleared when the meeting ends.
-- `st clear` also ends Slack Do Not Disturb and clears your GitHub status, so anything you set there during a meeting is cleared when it ends.
+- Only the Slack status is cleared. Do Not Disturb and your GitHub status are left alone.
 - A failed `st` call is retried once. If it fails again, it waits for the next meeting.
 
 ## ⚠️ Background Activity Alert
