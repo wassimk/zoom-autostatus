@@ -8,6 +8,7 @@ use std::time::Duration;
 use watcher::{default_state_dir, Watcher};
 
 mod detect;
+mod launchagent;
 mod st;
 mod watcher;
 
@@ -101,13 +102,10 @@ fn main() -> Result<()> {
 
     match cli.command {
         Cmd::Start { verbose } => run_watcher(verbose),
-        Cmd::Install { .. } => todo!(),
-        Cmd::Uninstall => todo!(),
-        Cmd::Stop => todo!(),
-        Cmd::Restart => todo!(),
-        Cmd::Status => {
-            println!("not implemented");
-            Ok(())
-        }
+        Cmd::Install { force } => launchagent::install_launchagent(force),
+        Cmd::Uninstall => launchagent::uninstall_launchagent(),
+        Cmd::Stop => launchagent::stop_launchagent(),
+        Cmd::Restart => launchagent::restart_launchagent(),
+        Cmd::Status => launchagent::show_status(),
     }
 }

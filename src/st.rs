@@ -86,7 +86,18 @@ impl StRunner for ShellStRunner {
     }
 }
 
-fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool) -> StOutcome {
+pub enum ShellRun {
+    Finished {
+        success: bool,
+        stdout: String,
+        stderr: String,
+    },
+    TimedOut,
+    SpawnFailed(String),
+}
+
+/// Runs `command` in an interactive login shell so it sees the user's exported tokens
+pub fn run_shell(shell: &str, command: &str, timeout: Duration) -> ShellRun {
     let mut child = match Command::new(shell)
         .args(["-lic", command])
         .stdin(Stdio::null())
@@ -95,7 +106,7 @@ fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool
         .spawn()
     {
         Ok(child) => child,
-        Err(e) => return StOutcome::Failed(format!("Failed to start {shell}: {e}")),
+        Err(e) => return ShellRun::SpawnFailed(format!("Failed to start {shell}: {e}")),
     };
 
     // Read the pipes on their own threads so a chatty shell can't fill them and stall
@@ -103,30 +114,42 @@ fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool
     let stderr = read_in_background(child.stderr.take());
 
     let started = Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return StOutcome::Failed(format!(
-                    "`{command}` timed out after {}s. Something in your shell startup \
-                     may be waiting for input.",
-                    timeout.as_secs()
-                ));
+                return ShellRun::TimedOut;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return StOutcome::Failed(format!("Failed waiting for `{command}`: {e}")),
+            Err(e) => return ShellRun::SpawnFailed(format!("Failed waiting for {shell}: {e}")),
         }
-    }
+    };
 
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
-    if verbose {
-        eprintln!("[st stdout]\n{}", stdout.trim_end());
-        eprintln!("[st stderr]\n{}", stderr.trim_end());
+    ShellRun::Finished {
+        success: status.success(),
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
     }
-    parse_st_output(&stdout, &stderr)
+}
+
+fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool) -> StOutcome {
+    match run_shell(shell, command, timeout) {
+        ShellRun::Finished { stdout, stderr, .. } => {
+            if verbose {
+                eprintln!("[st stdout]\n{}", stdout.trim_end());
+                eprintln!("[st stderr]\n{}", stderr.trim_end());
+            }
+            parse_st_output(&stdout, &stderr)
+        }
+        ShellRun::TimedOut => StOutcome::Failed(format!(
+            "`{command}` timed out after {}s. Something in your shell startup \
+             may be waiting for input.",
+            timeout.as_secs()
+        )),
+        ShellRun::SpawnFailed(msg) => StOutcome::Failed(msg),
+    }
 }
 
 fn read_in_background<R: Read + Send + 'static>(
