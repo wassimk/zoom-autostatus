@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 
 #[allow(dead_code)] // wired into the watcher in a later commit
 mod st;
+#[allow(dead_code)] // wired into the start command in a later commit
+mod watcher;
 
 // --- CLI ---
 
