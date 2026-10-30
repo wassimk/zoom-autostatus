@@ -1,6 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+#[allow(dead_code)] // wired into the watcher in a later commit
+mod st;
+
 // --- CLI ---
 
 #[derive(Parser, Debug)]
