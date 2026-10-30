@@ -1,5 +1,7 @@
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +105,14 @@ pub fn run_shell(shell: &str, command: &str, timeout: Duration) -> ShellRun {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Its own process group, so anything the startup files leave running can be killed with it
+        .process_group(0)
         .spawn()
     {
         Ok(child) => child,
         Err(e) => return ShellRun::SpawnFailed(format!("Failed to start {shell}: {e}")),
     };
+    let process_group = child.id();
 
     // Read the pipes on their own threads so a chatty shell can't fill them and stall
     let stdout = read_in_background(child.stdout.take());
@@ -118,7 +123,7 @@ pub fn run_shell(shell: &str, command: &str, timeout: Duration) -> ShellRun {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
+                kill_process_group(process_group);
                 let _ = child.wait();
                 return ShellRun::TimedOut;
             }
@@ -127,11 +132,39 @@ pub fn run_shell(shell: &str, command: &str, timeout: Duration) -> ShellRun {
         }
     };
 
+    // A background process started by the shell can keep the pipes open after the shell exits
+    kill_process_group(process_group);
+    let deadline = Instant::now() + OUTPUT_GRACE;
+
     ShellRun::Finished {
         success: status.success(),
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        stdout: collect_output(&stdout, deadline),
+        stderr: collect_output(&stderr, deadline),
     }
+}
+
+fn kill_process_group(process_group: u32) {
+    let _ = Command::new("kill")
+        .args(["-TERM", &format!("-{process_group}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+// The shell has exited, so its own output is already in the pipe. Anything still holding the
+// pipe open after the grace period is a stray process we don't wait for.
+const OUTPUT_GRACE: Duration = Duration::from_millis(500);
+
+fn collect_output(chunks: &Receiver<Vec<u8>>, deadline: Instant) -> String {
+    let mut output = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match chunks.recv_timeout(remaining) {
+            Ok(chunk) => output.extend_from_slice(&chunk),
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool) -> StOutcome {
@@ -152,16 +185,18 @@ fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool
     }
 }
 
-fn read_in_background<R: Read + Send + 'static>(
-    pipe: Option<R>,
-) -> std::thread::JoinHandle<String> {
+fn read_in_background<R: Read + Send + 'static>(pipe: Option<R>) -> Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut output = String::new();
-        if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_string(&mut output);
+        let Some(mut pipe) = pipe else { return };
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = pipe.read(&mut buffer) {
+            if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
+                break;
+            }
         }
-        output
-    })
+    });
+    receiver
 }
 
 #[cfg(test)]
@@ -240,6 +275,21 @@ mod tests {
         ));
         assert!(msg.contains("timed out"), "{msg:?}");
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn background_child_holding_output_does_not_block() {
+        let started = Instant::now();
+        let run = run_shell("/bin/sh", "sleep 5 & echo hi", Duration::from_secs(3));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+        match run {
+            ShellRun::Finished { stdout, .. } => assert!(stdout.contains("hi"), "{stdout:?}"),
+            _ => panic!("expected the shell to finish"),
+        }
     }
 
     #[test]
