@@ -77,15 +77,16 @@ pub trait StRunner {
 pub struct ShellStRunner {
     pub shell: String,
     pub timeout: Duration,
+    pub verbose: bool,
 }
 
 impl StRunner for ShellStRunner {
     fn run(&self, action: StAction) -> StOutcome {
-        run_with_timeout(&self.shell, action.command(), self.timeout)
+        run_with_timeout(&self.shell, action.command(), self.timeout, self.verbose)
     }
 }
 
-fn run_with_timeout(shell: &str, command: &str, timeout: Duration) -> StOutcome {
+fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool) -> StOutcome {
     let mut child = match Command::new(shell)
         .args(["-lic", command])
         .stdin(Stdio::null())
@@ -121,6 +122,10 @@ fn run_with_timeout(shell: &str, command: &str, timeout: Duration) -> StOutcome 
 
     let stdout = stdout.join().unwrap_or_default();
     let stderr = stderr.join().unwrap_or_default();
+    if verbose {
+        eprintln!("[st stdout]\n{}", stdout.trim_end());
+        eprintln!("[st stderr]\n{}", stderr.trim_end());
+    }
     parse_st_output(&stdout, &stderr)
 }
 
@@ -208,6 +213,7 @@ mod tests {
             "/bin/sh",
             "sleep 5",
             Duration::from_millis(200),
+            false,
         ));
         assert!(msg.contains("timed out"), "{msg:?}");
         assert!(started.elapsed() < Duration::from_secs(2));
