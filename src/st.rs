@@ -142,7 +142,9 @@ pub fn run_shell(shell: &str, command: &str, timeout: Duration) -> ShellRun {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
-                kill_process_group(process_group);
+                // Interactive shells ignore SIGTERM, so a hung one needs SIGKILL
+                kill_process_group(process_group, "KILL");
+                let _ = child.kill();
                 let _ = child.wait();
                 return ShellRun::TimedOut;
             }
@@ -152,7 +154,7 @@ pub fn run_shell(shell: &str, command: &str, timeout: Duration) -> ShellRun {
     };
 
     // A background process started by the shell can keep the pipes open after the shell exits
-    kill_process_group(process_group);
+    kill_process_group(process_group, "TERM");
     let deadline = Instant::now() + OUTPUT_GRACE;
 
     ShellRun::Finished {
@@ -162,9 +164,10 @@ pub fn run_shell(shell: &str, command: &str, timeout: Duration) -> ShellRun {
     }
 }
 
-fn kill_process_group(process_group: u32) {
+// `--` keeps a negative process group id from being read as an option on Linux
+fn kill_process_group(process_group: u32, signal: &str) {
     let _ = Command::new("kill")
-        .args(["-TERM", &format!("-{process_group}")])
+        .args(["-s", signal, "--", &format!("-{process_group}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
