@@ -5,7 +5,7 @@ use st::{login_shell, ShellStRunner};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use watcher::{default_state_dir, Watcher};
+use watcher::{default_state_dir, meeting_change, Watcher};
 
 mod detect;
 mod launchagent;
@@ -41,8 +41,8 @@ fn run_watcher(verbose: bool) -> Result<()> {
     let mut last_seen = None;
     while !shutdown.load(Ordering::SeqCst) {
         let in_meeting = detector.in_meeting();
-        if verbose && last_seen != Some(in_meeting) {
-            eprintln!("Zoom meeting: {}", if in_meeting { "yes" } else { "no" });
+        if let Some(change) = meeting_change(last_seen, in_meeting) {
+            eprintln!("{change}");
         }
         last_seen = Some(in_meeting);
 

@@ -75,6 +75,15 @@ impl<R: StRunner> Watcher<R> {
     }
 }
 
+/// The log line for a change in meeting state, if there was one
+pub fn meeting_change(was_in_meeting: Option<bool>, in_meeting: bool) -> Option<&'static str> {
+    match (was_in_meeting, in_meeting) {
+        (None | Some(false), true) => Some("Zoom meeting started"),
+        (Some(true), false) => Some("Zoom meeting ended"),
+        _ => None,
+    }
+}
+
 pub fn default_state_dir() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME not set");
     PathBuf::from(home).join("Library/Application Support/zoom-autostatus")
@@ -135,6 +144,26 @@ mod tests {
         for &in_meeting in ticks {
             watcher.tick(in_meeting);
         }
+    }
+
+    #[test]
+    fn meeting_change_logs_start_and_end() {
+        assert_eq!(
+            meeting_change(Some(false), true),
+            Some("Zoom meeting started")
+        );
+        assert_eq!(
+            meeting_change(Some(true), false),
+            Some("Zoom meeting ended")
+        );
+        assert_eq!(meeting_change(None, true), Some("Zoom meeting started"));
+    }
+
+    #[test]
+    fn meeting_change_is_quiet_without_a_change() {
+        assert_eq!(meeting_change(Some(true), true), None);
+        assert_eq!(meeting_change(Some(false), false), None);
+        assert_eq!(meeting_change(None, false), None);
     }
 
     #[test]
