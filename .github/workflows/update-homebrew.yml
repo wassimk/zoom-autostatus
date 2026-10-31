@@ -1,12 +1,23 @@
-name: update-homebrew
+name: Update Homebrew
 
 on:
-  workflow_run:
-    workflows: [release]
+  # Runs only after this repo's own Release workflow and never checks out
+  # code from the triggering run. It reads the published release assets
+  # and pushes to the tap with its own token.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [Release]
     types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   update-formula:
+    name: Update Formula
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
@@ -19,16 +30,17 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
 
       - name: Download SHA-256 checksums
         run: |
-          gh release download "${{ steps.version.outputs.tag }}" \
+          gh release download "$TAG" \
             --repo wassimk/zoom-autostatus \
             --pattern '*-sha.txt' \
             --dir checksums
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
 
       - name: Parse checksums
         id: shas
@@ -43,19 +55,25 @@ jobs:
             esac
           done
 
-      - name: Checkout homebrew-tap
-        uses: actions/checkout@v4
+      # The commit step pushes to the tap, so this checkout keeps the
+      # HOMEBREW_TAP_TOKEN credentials. No artifacts are uploaded from this job.
+      - name: Checkout homebrew-tap # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: wassimk/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Update formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_ARM64: ${{ steps.shas.outputs.darwin_arm64 }}
+          SHA_X86_64: ${{ steps.shas.outputs.darwin_x86_64 }}
         run: |
-          cat > Formula/zoom-autostatus.rb << 'RUBY'
+          cat > Formula/zoom-autostatus.rb << RUBY
           class ZoomAutostatus < Formula
             desc "Automatically set your Slack status while you're in a Zoom meeting"
             homepage "https://github.com/wassimk/zoom-autostatus"
-            version "${{ steps.version.outputs.version }}"
+            version "$VERSION"
             license "MIT"
 
             depends_on "wassimk/tap/st"
@@ -63,10 +81,10 @@ jobs:
 
             if Hardware::CPU.arm?
               url "https://github.com/wassimk/zoom-autostatus/releases/download/v#{version}/zoom-autostatus-Darwin-aarch64.tar.gz"
-              sha256 "${{ steps.shas.outputs.darwin_arm64 }}"
+              sha256 "$SHA_ARM64"
             elsif Hardware::CPU.intel?
               url "https://github.com/wassimk/zoom-autostatus/releases/download/v#{version}/zoom-autostatus-Darwin-x86_64.tar.gz"
-              sha256 "${{ steps.shas.outputs.darwin_x86_64 }}"
+              sha256 "$SHA_X86_64"
             end
 
             def install
@@ -93,10 +111,12 @@ jobs:
         run: sed -i 's/^          //' Formula/zoom-autostatus.rb
 
       - name: Commit and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/zoom-autostatus.rb
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "feat: update zoom-autostatus to ${{ steps.version.outputs.version }}"
+          git commit -m "feat: update zoom-autostatus to $VERSION"
           git push
