@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Stands in for pgrep so no real Zoom meeting is needed.
+# The first check at or after DEMO_MEETING_START (epoch seconds) reports CptHost running,
+# and every check after that reports it gone, so the meeting lasts one poll.
+seen="$HOME/.demo-meeting-seen"
+[ "$(date +%s)" -ge "${DEMO_MEETING_START:-0}" ] || exit 1
+[ -f "$seen" ] && exit 1
+touch "$seen"

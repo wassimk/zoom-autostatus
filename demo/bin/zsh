@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Stands in for the login shell so none of the real startup files (or tokens) load.
+[ "$1" = "-lic" ] && exec bash -c "$2"
+exec bash "$@"
