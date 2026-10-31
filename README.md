@@ -2,6 +2,8 @@
 
 Automatically set your Slack status while you're in a Zoom meeting. Watches for Zoom meetings on your Mac and shells out to [st](https://github.com/wassimk/st) to set and clear your status.
 
+![zoom-autostatus demo](demo/zoom-autostatus.gif)
+
 ## 💡 How It Works
 
 Zoom runs a helper process called `CptHost` only while you're in a meeting. The tool checks for it every 5 seconds. When a meeting starts, it runs `st meeting`. When the meeting ends, it runs `st clear --if meeting`, which clears your Slack status only if it still has the meeting emoji.
@@ -10,7 +12,7 @@ It only clears a status it set. If you leave a meeting and set `st lunch` right 
 
 ## 🛠️ Install
 
-Set up [st](https://github.com/wassimk/st) first. zoom-autostatus runs `st` for you, so `st` needs its tokens before this will work. At minimum, export `SLACK_PAT` from your shell startup file (`~/.zshrc` or `~/.zprofile` for zsh). The token needs the `users.profile:read` scope so the status can be checked before it's cleared.
+Set up [st](https://github.com/wassimk/st) first. zoom-autostatus runs `st` for you, so `st` needs its tokens before this will work. At minimum, export `SLACK_PAT` from your shell startup file (`~/.zshrc` or `~/.zprofile` for zsh). The token needs these user token scopes: `users.profile:write` and `users.profile:read` to set and check your status, plus `dnd:write` and `users:write`, which `st` uses for its other commands. Requires st 0.4.0 or later.
 
 ```shell
 brew install wassimk/tap/zoom-autostatus

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Stands in for st so the demo never touches a real Slack status.
+# Prints what st prints, and adds a dimmed line to the log to show the Slack change.
+log="$HOME/Library/Logs/zoom-autostatus/stderr.log"
+dim() { printf '\033[2m  slack: %s\033[0m\n' "$1" >>"$log"; }
+
+case "$*" in
+  meeting)
+    dim ":virtual-meeting: In a meeting"
+    echo "  Slack   ✓ In a meeting :virtual-meeting:"
+    ;;
+  "clear --if meeting")
+    dim "status cleared"
+    echo "  Slack   ✓ Cleared :virtual-meeting:"
+    ;;
+esac
