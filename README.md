@@ -114,7 +114,7 @@ brew install wassimk/tap/st
 ## 📝 Good to Know
 
 - If you already have a status when a meeting starts, like `st lunch`, the meeting status replaces it and is cleared when the meeting ends.
-- Only the Slack status is cleared. Do Not Disturb and your GitHub status are left alone.
+- When the meeting status is cleared, Do Not Disturb is ended and you're set back to active, so a paused-notifications status the meeting replaced (like `st eod`) doesn't linger. Your GitHub status is left alone. Requires st 0.4.1 or later.
 - A failed `st` call is retried once. If it fails again, it waits for the next meeting.
 
 ## ⚠️ Background Activity Alert
