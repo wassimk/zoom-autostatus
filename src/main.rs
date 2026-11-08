@@ -14,7 +14,8 @@ mod watcher;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const RETRY_DELAY: Duration = Duration::from_secs(5);
-const ST_TIMEOUT: Duration = Duration::from_secs(30);
+// Leaves room for st's own 10 second Focus limit on top of Slack, GitHub, and shell startup
+const ST_TIMEOUT: Duration = Duration::from_secs(60);
 
 // --- Watcher ---
 

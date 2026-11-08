@@ -125,7 +125,32 @@ pub fn install_launchagent(force: bool) -> Result<()> {
         println!("Warning: {}", friendly_error("SLACK_PAT not set"));
     }
 
+    setup_focus(&shell);
+
     Ok(())
+}
+
+pub fn setup_focus_command() -> &'static str {
+    "st setup-focus"
+}
+
+// Runs in the foreground so the user can click Add Shortcut. A failure only warns, since the
+// Slack status still works without Do Not Disturb.
+fn setup_focus(shell: &str) {
+    println!();
+    println!(
+        "Setting up Do Not Disturb during meetings with: {}",
+        setup_focus_command()
+    );
+    let status = Command::new(shell)
+        .args(["-lic", setup_focus_command()])
+        .status();
+    if !matches!(status, Ok(status) if status.success()) {
+        println!(
+            "Warning: Do Not Disturb isn't set up. Run `{}` yourself (needs st 0.6.0 or later).",
+            setup_focus_command()
+        );
+    }
 }
 
 pub fn uninstall_launchagent() -> Result<()> {
@@ -247,5 +272,15 @@ mod tests {
             after[..value].lines().count() <= 2,
             "SHELL value doesn't follow its key"
         );
+    }
+}
+
+#[cfg(test)]
+mod setup_focus_tests {
+    use super::*;
+
+    #[test]
+    fn setup_focus_command_is_st_setup_focus() {
+        assert_eq!(setup_focus_command(), "st setup-focus");
     }
 }
