@@ -57,10 +57,10 @@ impl<R: StRunner> Watcher<R> {
     }
 
     fn run_with_retry(&self, action: StAction) -> bool {
-        let mut outcome = self.runner.run(action);
+        let mut outcome = self.runner.run(action).slack;
         if matches!(outcome, StOutcome::Failed(_)) {
             std::thread::sleep(self.retry_delay);
-            outcome = self.runner.run(action);
+            outcome = self.runner.run(action).slack;
         }
 
         let result = match &outcome {
@@ -92,6 +92,7 @@ pub fn default_state_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::st::{FocusLine, StReport};
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -112,12 +113,17 @@ mod tests {
     }
 
     impl StRunner for &FakeRunner {
-        fn run(&self, action: StAction) -> StOutcome {
+        fn run(&self, action: StAction) -> StReport {
             self.calls.borrow_mut().push(action);
-            self.outcomes
+            let slack = self
+                .outcomes
                 .borrow_mut()
                 .pop_front()
-                .unwrap_or(StOutcome::Success)
+                .unwrap_or(StOutcome::Success);
+            StReport {
+                slack,
+                focus: FocusLine::Missing,
+            }
         }
     }
 
@@ -280,7 +286,7 @@ mod tests {
         let mut w = watcher(&runner, temp_state_dir());
         run_ticks(&mut w, &[false, true]);
         let last = std::fs::read_to_string(w.last_result_path()).unwrap();
-        assert_eq!(last.trim(), "ok: st meeting");
+        assert_eq!(last.trim(), "ok: st meeting --focus");
     }
 
     #[test]
