@@ -1,4 +1,4 @@
-use crate::st::{StAction, StOutcome, StRunner};
+use crate::st::{FocusLine, StAction, StOutcome, StReport, StRunner};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -40,8 +40,10 @@ impl<R: StRunner> Watcher<R> {
         }
     }
 
+    // Focus counts too, so a meeting where only Do Not Disturb turned on still gets cleared
     fn start_meeting(&self) {
-        if self.run_with_retry(StAction::Meeting) {
+        let report = self.run_with_retry(StAction::Meeting);
+        if report.slack == StOutcome::Success || matches!(report.focus, FocusLine::Ok(_)) {
             if let Err(e) = std::fs::create_dir_all(&self.state_dir)
                 .and_then(|()| std::fs::write(self.active_path(), ""))
             {
@@ -56,22 +58,30 @@ impl<R: StRunner> Watcher<R> {
         let _ = std::fs::remove_file(self.active_path());
     }
 
-    fn run_with_retry(&self, action: StAction) -> bool {
-        let mut outcome = self.runner.run(action).slack;
-        if matches!(outcome, StOutcome::Failed(_)) {
+    // Only a Slack failure retries, since a retry reruns the whole st command
+    fn run_with_retry(&self, action: StAction) -> StReport {
+        let mut report = self.runner.run(action);
+        if matches!(report.slack, StOutcome::Failed(_)) {
             std::thread::sleep(self.retry_delay);
-            outcome = self.runner.run(action).slack;
+            report = self.runner.run(action);
         }
 
-        let result = match &outcome {
+        let mut result = match &report.slack {
             StOutcome::Success => format!("ok: {}", action.command()),
             StOutcome::Failed(msg) => format!("failed: {}: {msg}", action.command()),
         };
+        match &report.focus {
+            FocusLine::Ok(detail) | FocusLine::Skipped(detail) => {
+                result.push_str(&format!("\nfocus: {detail}"));
+            }
+            FocusLine::Failed(detail) => result.push_str(&format!("\nfocus failed: {detail}")),
+            FocusLine::Missing => {}
+        }
         eprintln!("{result}");
         let _ = std::fs::create_dir_all(&self.state_dir)
             .and_then(|()| std::fs::write(self.last_result_path(), format!("{result}\n")));
 
-        outcome == StOutcome::Success
+        report
     }
 }
 
@@ -92,7 +102,7 @@ pub fn default_state_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::st::{FocusLine, StReport};
+
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -100,14 +110,26 @@ mod tests {
     #[derive(Default)]
     struct FakeRunner {
         calls: RefCell<Vec<StAction>>,
-        outcomes: RefCell<VecDeque<StOutcome>>,
+        reports: RefCell<VecDeque<StReport>>,
     }
 
     impl FakeRunner {
         fn with_outcomes(outcomes: Vec<StOutcome>) -> Self {
+            Self::with_reports(
+                outcomes
+                    .into_iter()
+                    .map(|slack| StReport {
+                        slack,
+                        focus: FocusLine::Missing,
+                    })
+                    .collect(),
+            )
+        }
+
+        fn with_reports(reports: Vec<StReport>) -> Self {
             Self {
                 calls: RefCell::default(),
-                outcomes: RefCell::new(outcomes.into()),
+                reports: RefCell::new(reports.into()),
             }
         }
     }
@@ -115,16 +137,91 @@ mod tests {
     impl StRunner for &FakeRunner {
         fn run(&self, action: StAction) -> StReport {
             self.calls.borrow_mut().push(action);
-            let slack = self
-                .outcomes
-                .borrow_mut()
-                .pop_front()
-                .unwrap_or(StOutcome::Success);
-            StReport {
-                slack,
+            self.reports.borrow_mut().pop_front().unwrap_or(StReport {
+                slack: StOutcome::Success,
                 focus: FocusLine::Missing,
-            }
+            })
         }
+    }
+
+    fn report(slack: StOutcome, focus: FocusLine) -> StReport {
+        StReport { slack, focus }
+    }
+
+    #[test]
+    fn focus_success_alone_still_marks_the_meeting() {
+        let runner = FakeRunner::with_reports(vec![
+            report(failed(), FocusLine::Ok("Do Not Disturb on".into())),
+            report(failed(), FocusLine::Ok("Do Not Disturb on".into())),
+        ]);
+        let mut w = watcher(&runner, temp_state_dir());
+        run_ticks(&mut w, &[false, true]);
+        assert!(w.active_path().exists());
+        run_ticks(&mut w, &[false]);
+        assert_eq!(runner.calls.borrow().last(), Some(&StAction::Clear));
+    }
+
+    #[test]
+    fn focus_failure_alone_does_not_retry() {
+        let runner = FakeRunner::with_reports(vec![report(
+            StOutcome::Success,
+            FocusLine::Failed("boom".into()),
+        )]);
+        let mut w = watcher(&runner, temp_state_dir());
+        run_ticks(&mut w, &[false, true]);
+        assert_eq!(*runner.calls.borrow(), vec![StAction::Meeting]);
+        assert!(w.active_path().exists());
+    }
+
+    #[test]
+    fn last_result_includes_the_focus_line() {
+        let runner = FakeRunner::with_reports(vec![report(
+            StOutcome::Success,
+            FocusLine::Ok("Do Not Disturb on".into()),
+        )]);
+        let mut w = watcher(&runner, temp_state_dir());
+        run_ticks(&mut w, &[false, true]);
+        let last = std::fs::read_to_string(w.last_result_path()).unwrap();
+        assert_eq!(
+            last.trim(),
+            "ok: st meeting --focus\nfocus: Do Not Disturb on"
+        );
+    }
+
+    #[test]
+    fn last_result_shows_a_focus_failure() {
+        let runner = FakeRunner::with_reports(vec![report(
+            StOutcome::Success,
+            FocusLine::Failed("The st Focus shortcut isn't installed. Run: st setup-focus".into()),
+        )]);
+        let mut w = watcher(&runner, temp_state_dir());
+        run_ticks(&mut w, &[false, true]);
+        let last = std::fs::read_to_string(w.last_result_path()).unwrap();
+        assert_eq!(
+            last.trim(),
+            "ok: st meeting --focus\nfocus failed: The st Focus shortcut isn't installed. Run: st setup-focus"
+        );
+    }
+
+    #[test]
+    fn last_result_shows_a_focus_skip() {
+        let runner = FakeRunner::with_reports(vec![
+            report(
+                StOutcome::Success,
+                FocusLine::Ok("Do Not Disturb on".into()),
+            ),
+            report(
+                StOutcome::Success,
+                FocusLine::Skipped("Skipped, Slack status wasn't cleared".into()),
+            ),
+        ]);
+        let mut w = watcher(&runner, temp_state_dir());
+        run_ticks(&mut w, &[false, true, false]);
+        let last = std::fs::read_to_string(w.last_result_path()).unwrap();
+        assert_eq!(
+            last.trim(),
+            "ok: st clear --if meeting --focus\nfocus: Skipped, Slack status wasn't cleared"
+        );
     }
 
     fn temp_state_dir() -> PathBuf {
