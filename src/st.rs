@@ -13,9 +13,9 @@ pub enum StAction {
 impl StAction {
     pub fn command(&self) -> &'static str {
         match self {
-            StAction::Meeting => "st meeting",
-            // Leaves a status the user set after the meeting, like lunch, alone
-            StAction::Clear => "st clear --if meeting",
+            StAction::Meeting => "st meeting --focus",
+            // Leaves a status the user set after the meeting, like lunch, alone, and its Focus too
+            StAction::Clear => "st clear --if meeting --focus",
         }
     }
 }
@@ -24,6 +24,21 @@ impl StAction {
 pub enum StOutcome {
     Success,
     Failed(String),
+}
+
+/// st's Focus line, kept apart from the Slack result so it never decides a retry
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusLine {
+    Ok(String),
+    Failed(String),
+    Skipped(String),
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StReport {
+    pub slack: StOutcome,
+    pub focus: FocusLine,
 }
 
 const SLACK_OK: &str = "Slack   \u{2713}";
@@ -47,11 +62,34 @@ pub fn parse_st_output(stdout: &str, stderr: &str) -> StOutcome {
         return StOutcome::Failed(friendly_error("command not found: st"));
     }
 
-    if lines().any(|line| line.contains("unexpected argument '--if'")) {
-        return StOutcome::Failed(friendly_error("unexpected argument '--if'"));
+    for flag in ["--if", "--focus"] {
+        let raw = format!("unexpected argument '{flag}'");
+        if lines().any(|line| line.contains(&raw)) {
+            return StOutcome::Failed(friendly_error(&raw));
+        }
     }
 
     StOutcome::Failed(friendly_error("st printed no Slack result"))
+}
+
+const FOCUS_OK: &str = "Focus   \u{2713}";
+const FOCUS_FAILED: &str = "Focus   \u{2717}";
+const FOCUS_SKIPPED: &str = "Focus   -";
+
+pub fn parse_focus_line(stdout: &str, stderr: &str) -> FocusLine {
+    for line in stdout.lines().chain(stderr.lines()) {
+        let detail = |marker: &str| line.split(marker).nth(1).unwrap_or("").trim().to_string();
+        if line.contains(FOCUS_OK) {
+            return FocusLine::Ok(detail(FOCUS_OK));
+        }
+        if line.contains(FOCUS_FAILED) {
+            return FocusLine::Failed(detail(FOCUS_FAILED));
+        }
+        if line.contains(FOCUS_SKIPPED) {
+            return FocusLine::Skipped(detail(FOCUS_SKIPPED));
+        }
+    }
+    FocusLine::Missing
 }
 
 pub fn friendly_error(raw: &str) -> String {
@@ -81,6 +119,12 @@ pub fn friendly_error(raw: &str) -> String {
             .to_string();
     }
 
+    if raw.contains("unexpected argument '--focus'") {
+        return "Your st is too old to turn on Do Not Disturb (needs st 0.6.0). \
+                Update it with: brew upgrade st"
+            .to_string();
+    }
+
     format!("st failed: {raw}")
 }
 
@@ -92,7 +136,7 @@ pub fn login_shell() -> String {
 }
 
 pub trait StRunner {
-    fn run(&self, action: StAction) -> StOutcome;
+    fn run(&self, action: StAction) -> StReport;
 }
 
 pub struct ShellStRunner {
@@ -102,7 +146,7 @@ pub struct ShellStRunner {
 }
 
 impl StRunner for ShellStRunner {
-    fn run(&self, action: StAction) -> StOutcome {
+    fn run(&self, action: StAction) -> StReport {
         run_with_timeout(&self.shell, action.command(), self.timeout, self.verbose)
     }
 }
@@ -189,21 +233,30 @@ fn collect_output(chunks: &Receiver<Vec<u8>>, deadline: Instant) -> String {
     String::from_utf8_lossy(&output).into_owned()
 }
 
-fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool) -> StOutcome {
+fn run_with_timeout(shell: &str, command: &str, timeout: Duration, verbose: bool) -> StReport {
     match run_shell(shell, command, timeout) {
         ShellRun::Finished { stdout, stderr, .. } => {
             if verbose {
                 eprintln!("[st stdout]\n{}", stdout.trim_end());
                 eprintln!("[st stderr]\n{}", stderr.trim_end());
             }
-            parse_st_output(&stdout, &stderr)
+            StReport {
+                slack: parse_st_output(&stdout, &stderr),
+                focus: parse_focus_line(&stdout, &stderr),
+            }
         }
-        ShellRun::TimedOut => StOutcome::Failed(format!(
-            "`{command}` timed out after {}s. Something in your shell startup \
-             may be waiting for input.",
-            timeout.as_secs()
-        )),
-        ShellRun::SpawnFailed(msg) => StOutcome::Failed(msg),
+        ShellRun::TimedOut => StReport {
+            slack: StOutcome::Failed(format!(
+                "`{command}` timed out after {}s. Something in your shell startup \
+                 may be waiting for input.",
+                timeout.as_secs()
+            )),
+            focus: FocusLine::Missing,
+        },
+        ShellRun::SpawnFailed(msg) => StReport {
+            slack: StOutcome::Failed(msg),
+            focus: FocusLine::Missing,
+        },
     }
 }
 
@@ -289,12 +342,9 @@ mod tests {
     #[test]
     fn runner_times_out() {
         let started = Instant::now();
-        let msg = failed_message(run_with_timeout(
-            "/bin/sh",
-            "sleep 5",
-            Duration::from_millis(200),
-            false,
-        ));
+        let msg = failed_message(
+            run_with_timeout("/bin/sh", "sleep 5", Duration::from_millis(200), false).slack,
+        );
         assert!(msg.contains("timed out"), "{msg:?}");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
@@ -337,7 +387,57 @@ mod tests {
 
     #[test]
     fn action_commands() {
-        assert_eq!(StAction::Meeting.command(), "st meeting");
-        assert_eq!(StAction::Clear.command(), "st clear --if meeting");
+        assert_eq!(StAction::Meeting.command(), "st meeting --focus");
+        assert_eq!(StAction::Clear.command(), "st clear --if meeting --focus");
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    #[test]
+    fn focus_check_line_is_ok() {
+        let stdout = "  Slack   \u{2713} In a meeting :virtual-meeting:\n  Focus   \u{2713} Do Not Disturb on\n";
+        assert_eq!(
+            parse_focus_line(stdout, ""),
+            FocusLine::Ok("Do Not Disturb on".to_string())
+        );
+    }
+
+    #[test]
+    fn focus_failure_line_is_failed() {
+        let stderr =
+            "  Focus   \u{2717} The st Focus shortcut isn't installed. Run: st setup-focus\n";
+        assert_eq!(
+            parse_focus_line("", stderr),
+            FocusLine::Failed(
+                "The st Focus shortcut isn't installed. Run: st setup-focus".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn focus_skip_line_is_skipped() {
+        let stdout = "  Focus   - Skipped, Slack status wasn't cleared\n";
+        assert_eq!(
+            parse_focus_line(stdout, ""),
+            FocusLine::Skipped("Skipped, Slack status wasn't cleared".to_string())
+        );
+    }
+
+    #[test]
+    fn no_focus_line_is_missing() {
+        let stdout = "  Slack   \u{2713} Cleared (DND off)\n";
+        assert_eq!(parse_focus_line(stdout, ""), FocusLine::Missing);
+    }
+
+    #[test]
+    fn old_st_without_focus_says_update() {
+        let stderr = "error: unexpected argument '--focus' found\n";
+        match parse_st_output("", stderr) {
+            StOutcome::Failed(msg) => assert!(msg.contains("brew upgrade st"), "{msg}"),
+            StOutcome::Success => panic!("expected Failed"),
+        }
     }
 }
